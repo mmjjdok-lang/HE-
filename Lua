@@ -16,6 +16,8 @@
                           that key runs the element from the keyboard
           * ON/OFF     -> enable / disable the shortcut
           * search box, live toggle state, duplicate-key protection
+      - Floating SHORTCUTS button (and optional ShortcutsKey): run and
+        sync every Button / Toggle WITHOUT opening the main window.
 
     Icons are loaded through Icons V2 (Footagesus):
         https://raw.githubusercontent.com/Footagesus/Icons/main/Main-v2.lua
@@ -1314,6 +1316,8 @@ function Elements:CreateButton(o)
 				pcall(pulse, row)
 			end,
 		})
+		entry.Row = row
+		entry.Tab = (self.Kind == "Tab") and self or nil
 		makeKeyChip(win, row, entry, o._ChipOffset or 8)
 		entry.Proxy = function(tab)
 			tab:CreateButton({ Name = o.Name, Description = "Pinned shortcut", Callback = o.Callback, _Proxy = true })
@@ -1496,6 +1500,8 @@ function Elements:CreateToggle(o)
 		entry.GetState = function()
 			return state
 		end
+		entry.Row = row
+		entry.Tab = (self.Kind == "Tab") and self or nil
 		makeKeyChip(win, row, entry, (style == "SlidingBox") and 88 or 46)
 		entry.Proxy = function(tab)
 			tab:CreateToggle({
@@ -2362,6 +2368,41 @@ function WindowMT:_RefreshChips()
 	end
 end
 
+-- Brings the real element into view and highlights it (used when a
+-- shortcut is pressed from the Shortcuts window, so you SEE it fire).
+function WindowMT:_Reveal(e)
+	if not (e.Tab and e.Row and e.Row.Parent) then
+		return
+	end
+	if not self.Visible or self.Compact then
+		return
+	end
+	self:SelectTab(e.Tab)
+	task.spawn(function()
+		task.wait(0.12)
+		if not (e.Row and e.Row.Parent) then
+			return
+		end
+		local pg = e.Tab.Page
+		local y = e.Row.AbsolutePosition.Y - pg.AbsolutePosition.Y + pg.CanvasPosition.Y - 8
+		pg.CanvasPosition = Vector2.new(0, math.max(y, 0))
+		tw(e.Row, 0.18, { BackgroundColor3 = State.Accent:Lerp(BLACK, 0.55) })
+		task.wait(0.32)
+		if e.Row and e.Row.Parent then
+			tw(e.Row, 0.4, { BackgroundColor3 = State.Theme.Element })
+		end
+	end)
+end
+
+-- One entry point for every way of triggering an element
+-- (source: "panel" | "key"). Same callback + same visuals as clicking it.
+function WindowMT:_PressEntry(e, source)
+	if source == "panel" and self.SyncView then
+		self:_Reveal(e)
+	end
+	task.spawn(safeCall, e.Fire)
+end
+
 function WindowMT:_BeginRebind(e)
 	if self.Rebinding == e then
 		self.Rebinding = nil
@@ -2733,7 +2774,7 @@ function WindowMT:OpenKeybindManager()
 					end
 				end)
 				run.Activated:Connect(function()
-					task.spawn(safeCall, e.Fire)
+					win:_PressEntry(e, "panel")
 				end)
 
 				-- key box: type a letter / digit / key name
@@ -2840,7 +2881,8 @@ function HE:CreateWindow(o)
 		Gui = gui, Tabs = {}, TabByName = {}, DropByName = {}, Flags = {}, Binds = {}, Elements = {}, FavSet = {}, Counter = 0,
 		ConfigName = o.ConfigName or "HE_Default", AutoSave = o.AutoSave ~= false,
 		ToggleKey = toKey(o.ToggleKey) or Enum.KeyCode.RightControl,
-		Compact = false, Visible = true, SizeFull = size,
+		ShortcutsKey = toKey(o.ShortcutsKey),
+		Compact = false, Visible = true, SizeFull = size, SyncView = o.SyncView ~= false,
 	}, WindowMT)
 
 	local cam = workspace.CurrentCamera
@@ -3055,11 +3097,35 @@ function HE:CreateWindow(o)
 	makeDraggable(openBtn, openBtn, { OnClick = function() win:Toggle() end })
 	win.OpenButton = openBtn
 
+	-- Floating SHORTCUTS button: opens the Shortcuts window by itself, so every
+	-- Button / Toggle can be run (and stays synced with the main UI) without
+	-- ever opening the main window. Disable with  ShortcutsButton = false.
+	local skb
+	if o.ShortcutsButton ~= false then
+		local bp = ob.Position or UDim2.new(0, 40, 0.5, 0)
+		skb = New("Frame", {
+			BackgroundColor3 = State.Theme.Panel, BackgroundTransparency = ob.Transparency or 0.1, AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(bp.X.Scale, bp.X.Offset, bp.Y.Scale, bp.Y.Offset + 56), Size = UDim2.fromOffset(40, 40), Active = true, ZIndex = 50, Parent = gui,
+		})
+		bind(skb, "BackgroundColor3", "Panel")
+		corner(skb, 14)
+		local skStroke = New("UIStroke", { Thickness = 1.5, Transparency = ob.StrokeTransparency or 0.3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = skb })
+		bind(skStroke, "Color", "Accent")
+		local skImg = New("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.55, 0.55), Parent = skb })
+		if not setIcon(skImg, "keyboard") then
+			skImg:Destroy()
+			New("TextLabel", { Size = UDim2.fromScale(1, 1), Text = "K", Font = FONT_BOLD, TextSize = 15, Parent = skb })
+		end
+		makeDraggable(skb, skb, { OnClick = function() win:OpenKeybindManager() end })
+		win.ShortcutsButton = skb
+	end
+
 	-- Register this window as THE window + keep everything inside the screen
 	Lib.Window = win
 	local function fitAll()
 		keepInside(main)
 		keepInside(openBtn)
+		keepInside(skb)
 	end
 	connect(gui:GetPropertyChangedSignal("AbsoluteSize"), fitAll)
 	connect(main:GetPropertyChangedSignal("AbsoluteSize"), function()
@@ -3108,9 +3174,13 @@ function HE:CreateWindow(o)
 			win:Toggle()
 			return
 		end
+		if win.ShortcutsKey and input.KeyCode == win.ShortcutsKey then
+			win:OpenKeybindManager()
+			return
+		end
 		for _, e in ipairs(win.Binds) do
 			if e.Enabled and e.Key == input.KeyCode then
-				task.spawn(safeCall, e.Fire)
+				win:_PressEntry(e, "key")
 			end
 		end
 	end)
