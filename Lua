@@ -16,6 +16,8 @@
                           that key runs the element from the keyboard
           * ON/OFF     -> enable / disable the shortcut
           * search box, live toggle state, duplicate-key protection
+      - Image fit system: small images are enlarged to the open-button size
+        (or a medium size for the title icon) and empty padding is cropped.
       - Floating SHORTCUTS button (and optional ShortcutsKey): run and
         sync every Button / Toggle WITHOUT opening the main window.
 
@@ -398,6 +400,84 @@ local function setIcon(label, icon)
 		return true
 	end
 	return false
+end
+
+-- ============================================================
+-- IMAGE FIT SYSTEM
+-- Every custom image (window icon, open button, tab icons) goes through
+-- fitImage:
+--   * it is always shown in a fixed box (open button = big, title = medium),
+--     so a small image is automatically enlarged to that box;
+--   * if the image has empty transparent padding around the artwork, the
+--     padding is detected (EditableImage) and cropped away so the artwork
+--     really fills the box. Sprite icons (Icons V2) are never cropped.
+--   * if the executor cannot read the image, it still gets the enlarged box.
+-- ============================================================
+local AssetService = game:GetService("AssetService")
+local TITLE_ICON_SIZE = 32 -- "medium" icon next to the window title
+
+local function fitImage(img, opts)
+	opts = opts or {}
+	img.ScaleType = Enum.ScaleType.Fit
+	if opts.Size then
+		img.Size = opts.Size
+	end
+	if opts.Crop == false or img.ImageRectSize ~= Vector2.new(0, 0) then
+		return
+	end
+	local id = type(img.Image) == "string" and img.Image:match("^rbxassetid://(%d+)$")
+	if not id then
+		return
+	end
+	task.spawn(function()
+		local ok, x0, y0, x1, y1, iw, ih = pcall(function()
+			local ei = AssetService:CreateEditableImageAsync(Content.fromAssetId(tonumber(id)))
+			local sz = ei.Size
+			local w, h = sz.X, sz.Y
+			if w < 1 or h < 1 or w * h > 1024 * 1024 then
+				ei:Destroy()
+				return nil
+			end
+			local buf = ei:ReadPixelsBuffer(Vector2.new(0, 0), sz)
+			ei:Destroy()
+			local step = (w * h > 512 * 512) and 2 or 1
+			local minX, minY, maxX, maxY = w, h, -1, -1
+			for y = 0, h - 1, step do
+				for x = 0, w - 1, step do
+					if buffer.readu8(buf, (y * w + x) * 4 + 3) > 16 then
+						if x < minX then
+							minX = x
+						end
+						if y < minY then
+							minY = y
+						end
+						if x > maxX then
+							maxX = x
+						end
+						if y > maxY then
+							maxY = y
+						end
+					end
+				end
+				if y % 64 == 0 then
+					task.wait()
+				end
+			end
+			if maxX < minX or maxY < minY then
+				return nil
+			end
+			return minX, minY, math.min(w - 1, maxX + step - 1), math.min(h - 1, maxY + step - 1), w, h
+		end)
+		if not ok or not x0 or not img.Parent then
+			return
+		end
+		local bw, bh = x1 - x0 + 1, y1 - y0 + 1
+		-- crop only when there is real empty padding (more than ~8%)
+		if bw * bh < iw * ih * 0.92 then
+			img.ImageRectOffset = Vector2.new(x0, y0)
+			img.ImageRectSize = Vector2.new(bw, bh)
+		end
+	end)
 end
 
 -- ============================================================
@@ -924,7 +1004,7 @@ end
 -- KEY SYSTEM
 -- ============================================================
 local function runKeySystem(gui, cfg)
-	cfg = cfg or {}
+	cfg = (type(cfg) == "table") and cfg or {}
 	local function valid(k)
 		if cfg.Validate then
 			local ok, res = pcall(cfg.Validate, k)
@@ -936,9 +1016,12 @@ local function runKeySystem(gui, cfg)
 		return k == cfg.Key
 	end
 	local saveFile = (cfg.SaveFile or "HE_Key.txt")
-	if cfg.SaveKey and typeof(isfile) == "function" and isfile(saveFile) then
+	-- A previously saved valid key skips the window (use ForceShow = true to
+	-- always show it, or delete the saved key file).
+	if cfg.SaveKey and not cfg.ForceShow and typeof(isfile) == "function" and isfile(saveFile) then
 		local ok, saved = pcall(readfile, saveFile)
-		if ok and valid(saved) then
+		if ok and type(saved) == "string" and valid((saved:gsub("^%s+", ""):gsub("%s+$", ""))) then
+			HE:Notify({ Title = "Key", Content = "Saved key accepted.", Type = "Success", Duration = 2.5 })
 			return true
 		end
 	end
@@ -997,9 +1080,10 @@ local function runKeySystem(gui, cfg)
 	end)
 	verify.Activated:Connect(function()
 		playSound()
-		if valid(input.Text) then
+		local typed = input.Text:gsub("^%s+", ""):gsub("%s+$", "")
+		if valid(typed) then
 			if cfg.SaveKey and typeof(writefile) == "function" then
-				pcall(writefile, saveFile, input.Text)
+				pcall(writefile, saveFile, typed)
 			end
 			done, result = true, true
 		else
@@ -2111,6 +2195,9 @@ local function createTab(win, o, parentHolder, indent)
 	corner(ind, 2)
 	local ic = New("ImageLabel", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 12 + indent, 0.5, 0), Size = UDim2.fromOffset(16, 16), Parent = entry })
 	local hasIcon = o.Icon and setIcon(ic, o.Icon) or false
+	if hasIcon then
+		fitImage(ic)
+	end
 	ic.Visible = hasIcon
 	local lbl = New("TextLabel", {
 		Position = UDim2.new(0, (hasIcon and 36 or 14) + indent, 0, 0), Size = UDim2.new(1, -(48 + indent), 1, 0),
@@ -2824,7 +2911,7 @@ function WindowMT:OpenKeybindManager()
 				})
 				corner(sw, R_BTN)
 				sw.Activated:Connect(function()
-					task.spawn(safeCall, e.Fire)
+					win:_PressEntry(e, "panel")
 				end)
 			end
 		end
@@ -2900,9 +2987,11 @@ function HE:CreateWindow(o)
 	bind(div, "BackgroundColor3", "Line")
 	local iconW = 14
 	if o.Icon then
-		local wi = New("ImageLabel", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 14, 0.5, 0), Size = UDim2.fromOffset(24, 24), Parent = top })
+		local isz = tonumber(o.IconSize) or TITLE_ICON_SIZE
+		local wi = New("ImageLabel", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 14, 0.5, 0), Size = UDim2.fromOffset(isz, isz), Parent = top })
 		if setIcon(wi, o.Icon) then
-			iconW = 48
+			fitImage(wi, { Size = UDim2.fromOffset(isz, isz) })
+			iconW = 14 + isz + 10
 		else
 			wi:Destroy()
 		end
@@ -3083,7 +3172,10 @@ function HE:CreateWindow(o)
 	local obStroke = New("UIStroke", { Thickness = 1.5, Transparency = ob.StrokeTransparency or 0.3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = openBtn })
 	bind(obStroke, "Color", "Accent")
 	local obImg = New("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.6, 0.6), Parent = openBtn })
-	if not (ob.Image and setIcon(obImg, ob.Image)) then
+	if ob.Image and setIcon(obImg, ob.Image) then
+		local sc = tonumber(ob.ImageScale) or 0.84
+		fitImage(obImg, { Size = UDim2.fromScale(sc, sc) })
+	else
 		obImg:Destroy()
 		New("TextLabel", { Size = UDim2.fromScale(1, 1), Text = "HE", Font = FONT_BOLD, TextSize = 16, Parent = openBtn })
 	end
