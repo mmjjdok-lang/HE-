@@ -89,7 +89,7 @@ for _, p in ipairs({
 	{ "Azure", "#2196F3" }, { "Blue", "#3F6FE0" }, { "Navy", "#3949AB" }, { "Indigo", "#5C6BC0" },
 	{ "Violet", "#8E24AA" }, { "Purple", "#AB47BC" }, { "Magenta", "#E91E8C" }, { "Pink", "#F48FB1" },
 	{ "Rose", "#FF6F91" }, { "Coral", "#FF7F6B" }, { "Brown", "#8D6E63" }, { "Sand", "#D7B98E" },
-	{ "Steel", "#90A4AE" }, { "Silver", "#CFD8DC" },
+	{ "Steel", "#90A4AE" }, { "Silver", "#CFD8DC" }, { "Black", "#000000" }, { "Dark", "#141414" },
 }) do
 	ColorMap[p[1]:lower()] = Color3.fromHex(p[2])
 	table.insert(HE.ColorNames, p[1])
