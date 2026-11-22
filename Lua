@@ -2753,10 +2753,6 @@ function WindowMT:OpenKeybindManager()
 				-- left area: tap to RUN the element
 				local run = New("TextButton", { Size = UDim2.new(1, -118, 1, 0), Parent = r })
 				local stateTxt = ""
-				if e.GetState then
-					local on = e.GetState()
-					stateTxt = string.format('  <font size="9" color="#%s">%s</font>', (on and State.Accent or State.Theme.SubText):ToHex(), on and "ON" or "OFF")
-				end
 				New("TextLabel", {
 					Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -12, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
 					TextTruncate = Enum.TextTruncate.AtEnd, RichText = true, TextSize = 12,
@@ -2817,21 +2813,18 @@ function WindowMT:OpenKeybindManager()
 					win:_Changed()
 				end)
 
-				-- ON / OFF
+				-- real state switch (Toggle) or RUN button (Button): acts on the element itself.
+				-- The keyboard key is active whenever the key box is filled (empty = no key).
+				local isToggle = e.GetState ~= nil
+				local on = isToggle and e.GetState() or false
 				local sw = New("TextButton", {
-					BackgroundTransparency = 0, BackgroundColor3 = e.Enabled and State.Accent or State.Theme.Panel, AnchorPoint = Vector2.new(1, 0.5),
-					Position = UDim2.new(1, -60, 0.5, 0), Size = UDim2.fromOffset(44, 26), Text = e.Enabled and "ON" or "OFF", TextSize = 11, Font = FONT_BOLD,
-					TextColor3 = e.Enabled and BLACK or WHITE, Parent = r,
+					BackgroundTransparency = 0, BackgroundColor3 = on and State.Accent or State.Theme.Panel, AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, -60, 0.5, 0), Size = UDim2.fromOffset(44, 26), Text = isToggle and (on and "ON" or "OFF") or "RUN",
+					TextSize = 11, Font = FONT_BOLD, TextColor3 = on and BLACK or WHITE, Parent = r,
 				})
 				corner(sw, R_BTN)
 				sw.Activated:Connect(function()
-					if not e.Key then
-						HE:Notify({ Title = "Shortcut", Content = "Type a key in the box first.", Type = "Warning", Duration = 2 })
-						return
-					end
-					e.Enabled = not e.Enabled
-					win:_RefreshChips()
-					win:_Changed()
+					task.spawn(safeCall, e.Fire)
 				end)
 			end
 		end
